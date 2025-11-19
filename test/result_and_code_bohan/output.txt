@@ -1,0 +1,1903 @@
+
+=== File: test/test_lightweight.py ===
+# test_lightweight_live.py
+
+import asyncio
+import logging
+from pprint import pprint
+import itertools
+import argparse
+
+import pandas as pd
+
+from jload import jload, jsave
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# --- Import the REAL services and the function to test ---
+from scheduler.scheduler_service import InferenceSchedulerService, P_INITIAL, P_REVISION
+from scheduler.scheduler_service import CompilationSchedulerService
+from proofsearch.lightweight.lightweightsearch import lightweight_inference
+
+# --- Configuration ---
+# Set up basic logging to see the output from all components
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# The URLs for your running services
+LLM_GATEWAY_URL = "http://della9.princeton.edu:6666"
+LEAN_GATEWAY_URL = "http://della9.princeton.edu:9876"
+#MODEL_NAME = "Goedel-Prover-V2-32B" # Or the model you are using
+MODEL_NAME= "ours"
+
+# --- Main Test Runner ---
+async def simple_test_lightweight():
+    """
+    Sets up real schedulers and runs an integration test of the 
+    lightweight_inference function.
+    """
+    
+    # Instantiate the real scheduler services
+    inference_scheduler = InferenceSchedulerService(vllm_gateway_url=LLM_GATEWAY_URL)
+    compilation_scheduler = CompilationSchedulerService(compilation_gateway_url=LEAN_GATEWAY_URL)
+
+    inference_scheduler.start()
+    
+    # --- Test Data ---
+    problem_statement = "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat Polynomial Complex\n\ntheorem easyproblem (a b : ℕ) : a + b = b + a := by sorry"
+    problem_name = "easy_problem"
+    num_revisions = 3
+    print("\n" + "="*50)
+    print("🚀 RUNNING LIVE INTEGRATION TEST...")
+    print(f"   Problem: {problem_statement}")
+    print(f"   Revisions: {num_revisions}")
+    print("="*50)
+    
+    final_result = None
+    try:
+        # Call the function with the real services
+        final_result = await lightweight_inference(
+            inference_scheduler=inference_scheduler,
+            compilation_scheduler=compilation_scheduler,
+            problem_statement=problem_statement,
+            problem_name=problem_name,
+            model_name=MODEL_NAME,
+            num_of_revision=num_revisions,
+            num_of_passes=8
+        )
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during the test: {e}", exc_info=True)
+    finally:
+        # Gracefully stop the background workers in the schedulers
+        inference_scheduler.stop()
+        compilation_scheduler.stop()
+        logging.info("Scheduler workers stopped.")
+
+    print("\n--- FINAL RESULT ---")
+    if final_result:
+        pprint(final_result)
+        if final_result.get("compilation_result", {}).get("complete"):
+            print("\n✅ Test Concluded: A complete proof was found!")
+            print(f"{final_result['code']}")
+        else:
+            print("\n⏹️ Test Concluded: A complete proof was not found after all revisions.")
+    else:
+        print("\n❌ Test Failed: An error occurred during execution.")
+
+async def test_lightweight_putnam(args):
+    # putnam_problem_path = "/scratch/gpfs/haoyu/Test-time/test/minif2f_scaffolded_lemmas.jsonl"
+    putnam_problem_path = '/scratch/gpfs/haoyu/Test-time/test/omni_scaffolded_lemmas.jsonl'
+    # putnam_problem_path = args.putnam_problem_path
+    # MODEL_NAME = args.model_name
+
+    df = pd.read_json(putnam_problem_path, lines=True)
+
+    #df = df[:2]
+
+    # Instantiate the real scheduler services
+    inference_scheduler = InferenceSchedulerService(vllm_gateway_url=LLM_GATEWAY_URL, num_workers=200)
+    compilation_scheduler = CompilationSchedulerService(compilation_gateway_url=LEAN_GATEWAY_URL, num_workers=200)
+
+    inference_scheduler.start()
+
+    num_revisions = 2
+    num_passes = 2
+
+    use_lemma = args.use_lemma
+
+    print(f"starting inference on {putnam_problem_path}")
+    print(f"use lemma: {use_lemma}")
+    print(f"model name: {MODEL_NAME}")
+    print(f"num passes: {num_passes}, num revisions: {num_revisions}")
+
+    tasks = [
+        asyncio.create_task(lightweight_inference(
+            inference_scheduler=inference_scheduler,
+            compilation_scheduler=compilation_scheduler,
+            problem_statement=r['lean4_code'],
+            problem_name=r['problem_id'],
+            model_name=MODEL_NAME,
+            num_of_revision=num_revisions,
+            num_of_passes=num_passes,
+            problem_index=i+1,
+            facts=r['lemmas'] if use_lemma else [],
+        ))
+        for i, r in itertools.islice(df.iterrows(), 200)
+    ]
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        print("\n--- Shutdown signal received, cancelling all background tasks ---")
+        
+        # Iterate through all running tasks and cancel them
+        for task in tasks:
+            task.cancel()
+        
+        # Wait for all tasks to acknowledge the cancellation
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        inference_scheduler.stop()
+        
+        print("--- All tasks have been shut down. Exiting. ---")
+
+    total_count = 0
+    for r in results:
+        try:
+            complete = r['compilation_result']['complete']
+            if complete:
+                total_count += 1
+                print("\n\n\n")
+                print({r["code"]})
+        except:
+            continue
+    
+    jsave(results, "lightweight_putnam_results.json")
+    
+    print(f"num passes: {num_passes}, num revisions: {num_revisions}")
+    print(f"total solved problems: {total_count}, solved_ratio: {total_count/len(df)}")
+
+# --- Run the test ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run lightweight inference tests.")
+    parser.add_argument("--putnam_problem_path", type=str, default="/scratch/gpfs/haoyu/Test-time/test/minif2f_scaffolded_lemmas.jsonl", help="Path to the Putnam problem JSONL file.")
+    parser.add_argument("--model_name", type=str, default="Goedel-Prover-V2-8B-new-style-RL-S50", help="Name of the model to use for inference.")
+    parser.add_argument("--num_revisions", type=int, default=0, help="Number of revisions to attempt.")
+    parser.add_argument("--num_passes", type=int, default=32, help="Number of parallel passes to run.")
+    parser.add_argument("--use_lemma", action='store_true', help="Whether to use lemmas from the dataset.")
+    args = parser.parse_args()
+
+    try:
+        asyncio.run(test_lightweight_putnam(args))
+    except KeyboardInterrupt:
+        print("Application forcefully interrupted.")
+
+=== File: test/test_mediumweight.py ===
+# test/test_mediumweight_batch.py
+
+import asyncio
+import logging
+import argparse
+import itertools
+import pandas as pd
+from jload import jsave
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# --- Import the REAL services and the function to test ---
+from scheduler.scheduler_service import InferenceSchedulerService, CompilationSchedulerService
+from proofsearch.mediumweight.mediumweightsearch import mediumweight_inference
+
+# --- Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.getLogger('httpx').setLevel(logging.WARNING)
+
+# The URLs for your running services
+LLM_GATEWAY_URL = "http://della9.princeton.edu:6666"
+LEAN_GATEWAY_URL = "http://della-gpu.princeton.edu:9876"
+
+async def test_mediumweight_batch(args):
+    """
+    Runs a batch integration test of the mediumweight_inference function on a
+    dataset of problems.
+    """
+    df = pd.read_json(args.problem_path, lines=True)
+
+    # Instantiate the real scheduler services with a high number of workers for concurrency
+    inference_scheduler = InferenceSchedulerService(vllm_gateway_url=LLM_GATEWAY_URL, num_workers=200)
+    compilation_scheduler = CompilationSchedulerService(compilation_gateway_url=LEAN_GATEWAY_URL, num_workers=200)
+
+    inference_scheduler.start()
+
+    print("\n" + "="*80)
+    print("🚀 RUNNING MEDIUM-WEIGHT BATCH TEST...")
+    print(f"   Dataset: {args.problem_path}")
+    print(f"   Model: {args.model_name}")
+    print(f"   Parallel Passes per Problem: {args.num_passes}")
+    print(f"   Revisions per Subproblem: {args.num_revisions}")
+    print("="*80 + "\n")
+
+    # Create a list of concurrent tasks, one for each problem in the dataset
+    tasks = [
+        asyncio.create_task(mediumweight_inference(
+            inference_scheduler=inference_scheduler,
+            compilation_scheduler=compilation_scheduler,
+            problem_statement=row['lean4_code'],
+            problem_name=row['problem_id'],
+            model_name=args.model_name,
+            num_of_revision=args.num_revisions,
+            num_of_passes=args.num_passes,
+            problem_index=i + 1,
+        ))
+        for i, row in itertools.islice(df.iterrows(), args.limit) # Use islice to limit problems
+    ]
+
+    results = []
+    try:
+        # Gather results from all problem-solving tasks
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        logging.error(f"A critical error occurred in asyncio.gather: {e}", exc_info=True)
+    finally:
+        print("\n--- Shutting down schedulers ---")
+        inference_scheduler.stop()
+        compilation_scheduler.stop()
+        print("--- Schedulers stopped ---")
+
+    # --- Process and Summarize Results ---
+    total_solved = 0
+    for res in results:
+        if isinstance(res, Exception):
+            logging.error(f"A task resulted in an exception: {res}")
+            continue
+        
+        if res.get("compilation_result", {}).get("complete"):
+            total_solved += 1
+            print("\n" + "-"*20 + f" ✅ SUCCESS: {res.get('name')} " + "-"*20)
+            print(res.get("code"))
+            print("-" * (42 + len(res.get('name', ''))))
+
+    jsave(results, args.output_path)
+    print(f"\n--- Results saved to {args.output_path} ---")
+
+    num_problems = len(tasks)
+    solve_ratio = (total_solved / num_problems) * 100 if num_problems > 0 else 0
+
+    print("\n" + "="*80)
+    print("📊 BATCH TEST SUMMARY")
+    print("="*80)
+    print(f"   Total problems attempted: {num_problems}")
+    print(f"   Total problems solved: {total_solved}")
+    print(f"   Solve Ratio: {solve_ratio:.2f}%")
+    print("="*80)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run medium-weight inference batch tests.")
+    parser.add_argument("--problem_path", type=str, default="/scratch/gpfs/yl7690/projects/DeepSeek-Prover-V1.5/datasets/minif2f_fixed.jsonl", help="Path to the problem JSONL file.")
+    parser.add_argument("--output_path", type=str, default="mediumweight_batch_results.json", help="Path to save the results JSON file.")
+    parser.add_argument("--model_name", type=str, default="ours", help="Name of the model to use.")
+    parser.add_argument("--num_revisions", type=int, default=2, help="Number of revisions for each subproblem.")
+    parser.add_argument("--num_passes", type=int, default=4, help="Number of parallel passes for each problem.")
+    parser.add_argument("--limit", type=int, default=250, help="Limit the number of problems to test from the dataset.")
+    args = parser.parse_args()
+
+    try:
+        asyncio.run(test_mediumweight_batch(args))
+    except KeyboardInterrupt:
+        print("\n🛑 Application forcefully interrupted by user.")
+
+=== File: proofsearch/search.py ===
+
+
+=== File: proofsearch/mediumweight/mediumweightsearch.py ===
+import asyncio
+import logging
+from typing import Dict, Any, List
+
+from proofsearch.lightweight.lightweightsearch import lightweight_inference
+from proofsearch.lightweight.lightweight_utils import InferenceHandler
+from .utils import ProofAnalysis
+
+logger = logging.getLogger(__name__)
+
+async def mediumweight_inference_single(
+    inference_scheduler,
+    compilation_scheduler,
+    problem_statement: str,
+    problem_name: str,
+    model_name: str,
+    num_of_revision: int = 2,
+    num_of_passes: int = 8,
+    problem_index: int = 1,
+    max_tokens: int = 24000,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> Dict[str, Any]:
+    """
+    Implements the medium-weight proof search pipeline.
+
+    1.  Generates an initial, full proof attempt which may contain multiple lemmas.
+    2.  If errors exist, it analyzes the proof to find faulty lemmas.
+    3.  For each faulty lemma, it creates a subproblem.
+    4.  It uses the lightweight_inference pipeline to solve all subproblems in parallel.
+    5.  It reconstructs the full proof with the fixed lemmas.
+    """
+    execution_log: List[str] = []
+
+    # --- 1. Initial Full Proof Generation ---
+    execution_log.append(f"[{problem_name}] Starting initial full proof generation.")
+    
+    initial_prompt = InferenceHandler.format_input(problem_statement, facts=[])
+    
+    extra_params = {
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+
+    try:
+        initial_output = await inference_scheduler.inference(
+            prompt=initial_prompt,
+            model=model_name,
+            priority=problem_index,
+            extra_params=extra_params
+        )
+        initial_code = InferenceHandler.process_output(initial_output, problem_statement, facts=[])
+    except asyncio.CancelledError:
+        execution_log.append(f"[{problem_name}] Task cancelled during initial inference.")
+        raise
+    except Exception as e:
+        error_msg = f"Initial inference failed: {e}"
+        logger.error(f"[{problem_name}] {error_msg}", exc_info=True)
+        execution_log.append(f"ERROR: {error_msg}")
+        return {"name": problem_name, "code": "", "compilation_result": {"complete": False, "errors": [error_msg]}, "execution_log": execution_log}
+
+    # --- 2. Initial Compilation and Analysis ---
+    execution_log.append(f"[{problem_name}] Compiling the initial full proof.")
+    try:
+        compilation_info = await compilation_scheduler.compile(name=f"{problem_name}_initial", code=initial_code)
+        compilation_result = compilation_info.get('compilation_result', {})
+    except asyncio.CancelledError:
+        execution_log.append(f"[{problem_name}] Task cancelled during initial compilation.")
+        raise
+    except Exception as e:
+        error_msg = f"Initial compilation failed: {e}"
+        logger.error(f"[{problem_name}] {error_msg}", exc_info=True)
+        execution_log.append(f"ERROR: {error_msg}")
+        compilation_result = {"complete": False, "errors": [error_msg]}
+
+    if compilation_result.get('complete'):
+        execution_log.append(f"[{problem_name}] Success on the first attempt!")
+        return {"name": problem_name, "code": initial_code, "compilation_result": compilation_result, "execution_log": execution_log}
+
+    if not compilation_result.get('errors'):
+        execution_log.append(f"WARN: [{problem_name}] Initial proof is not complete but has no errors. Cannot proceed.")
+        return {"name": problem_name, "code": initial_code, "compilation_result": compilation_result, "execution_log": execution_log}
+
+    # --- 3. Deconstruct into Subproblems ---
+    execution_log.append(f"[{problem_name}] Initial proof has errors. Analyzing and deconstructing.")
+    analysis = ProofAnalysis(initial_code, compilation_result.get('errors'))
+    
+    error_lemmas = sorted(list(analysis.error_declarations))
+    if not error_lemmas:
+        execution_log.append(f"WARN: [{problem_name}] Compilation failed but no specific error lemmas were identified.")
+        return {"name": problem_name, "code": initial_code, "compilation_result": compilation_result, "execution_log": execution_log, "final_analysis_report": analysis.report()}
+
+    # --- 4. Asynchronously Fix Subproblems ---
+    execution_log.append(f"[{problem_name}] Identified {len(error_lemmas)} faulty lemmas to fix in parallel: {', '.join(error_lemmas)}")
+    
+    fix_tasks = []
+    for lemma_name in error_lemmas:
+        try:
+            subproblem_statement = analysis.construct_subproblem(lemma_name)
+            subproblem_name = f"{problem_name}_fix_{lemma_name}"
+            
+            task = asyncio.create_task(lightweight_inference(
+                inference_scheduler=inference_scheduler,
+                compilation_scheduler=compilation_scheduler,
+                problem_statement=subproblem_statement,
+                problem_name=subproblem_name,
+                model_name=model_name,
+                num_of_revision=num_of_revision,
+                num_of_passes=num_of_passes,
+                problem_index=problem_index,
+                facts=[],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p
+            ))
+            fix_tasks.append((lemma_name, task))
+        except ValueError as e:
+            error_msg = f"Could not construct subproblem for {lemma_name}: {e}"
+            logger.error(f"[{problem_name}] {error_msg}")
+            execution_log.append(f"ERROR: {error_msg}")
+
+    if fix_tasks:
+        try:
+            # Await all fixing tasks to complete
+            task_results = await asyncio.gather(*(task for _, task in fix_tasks), return_exceptions=True)
+            
+            all_successful = True
+            for (lemma_name, _), result in zip(fix_tasks, task_results):
+                # Check if the result is a CancelledError
+                if isinstance(result, asyncio.CancelledError):
+                    execution_log.append(f"[{problem_name}] Subproblem fix for '{lemma_name}' was cancelled.")
+                    # Don't mark as unsuccessful since it was cancelled intentionally
+                    continue
+                    
+                if isinstance(result, Exception):
+                    all_successful = False
+                    error_msg = f"Fixing task for '{lemma_name}' failed with an exception: {result}"
+                    execution_log.append(f"ERROR: {error_msg}")
+                    logger.error(f"[{problem_name}] {error_msg}", exc_info=result)
+                    continue
+
+                if result.get("compilation_result", {}).get("complete"):
+                    execution_log.append(f"Successfully fixed lemma '{lemma_name}'.")
+                    analysis.fix_lemma(lemma_name, result.get("code", ""))
+                else:
+                    all_successful = False
+                    execution_log.append(f"Failed to fix lemma '{lemma_name}'. Lightweight search did not find a complete proof.")
+            
+            if not all_successful:
+                execution_log.append("Aborting medium-weight search due to failure in fixing one or more subproblems.")
+                return {
+                    "name": problem_name,
+                    "code": analysis.code,
+                    "compilation_result": {"complete": False, "errors": ["Failed to fix one or more subproblems."]},
+                    "final_analysis_report": analysis.report(),
+                    "execution_log": execution_log
+                }
+                
+        except asyncio.CancelledError:
+            # When this function is cancelled, also cancel all subtasks
+            execution_log.append(f"[{problem_name}] Cancelling all lightweight inference subtasks.")
+            for lemma_name, task in fix_tasks:
+                if not task.done():
+                    task.cancel()
+                    logger.info(f"[{problem_name}] Cancelled lightweight task for lemma '{lemma_name}'")
+            
+            # Wait briefly for tasks to actually cancel
+            await asyncio.gather(*(task for _, task in fix_tasks), return_exceptions=True)
+            
+            # Re-raise the cancellation
+            raise
+        finally:
+            # Ensure cleanup of any remaining tasks
+            for lemma_name, task in fix_tasks:
+                if not task.done():
+                    task.cancel()
+
+    # --- 5. Final Verification and Return ---
+    final_code = analysis.code
+    execution_log.append(f"[{problem_name}] All faulty lemmas have been patched. Performing final verification.")
+    
+    try:
+        final_compilation_info = await compilation_scheduler.compile(name=f"{problem_name}_final", code=final_code)
+        final_compilation_result = final_compilation_info.get('compilation_result', {})
+    except asyncio.CancelledError:
+        execution_log.append(f"[{problem_name}] Task cancelled during final compilation.")
+        raise
+    except Exception as e:
+        error_msg = f"Final verification failed with an exception: {e}"
+        logger.error(f"[{problem_name}] {error_msg}", exc_info=True)
+        execution_log.append(f"ERROR: {error_msg}")
+        final_compilation_result = {"complete": False, "errors": [error_msg]}
+
+    if final_compilation_result.get('complete'):
+        execution_log.append(f"[{problem_name}] Medium-weight search successful! Final proof is correct.")
+    else:
+        execution_log.append(f"WARN: [{problem_name}] Medium-weight search finished, but final proof is still not correct.")
+
+    return {
+        "name": problem_name,
+        "code": final_code,
+        "compilation_result": final_compilation_result,
+        "final_analysis_report": analysis.report(),
+        "execution_log": execution_log
+    }
+
+async def mediumweight_inference(
+    inference_scheduler,
+    compilation_scheduler,
+    problem_statement: str,
+    problem_name: str,
+    model_name: str,
+    num_of_revision: int = 1,
+    num_of_passes: int = 4,
+    problem_index: int = 1,
+    max_tokens: int = 24000,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> dict:
+    """
+    Orchestrates multiple parallel passes of the medium-weight inference pipeline.
+
+    This function launches `num_of_passes` instances of `mediumweight_inference_single`
+    concurrently. If any pass successfully finds a complete proof, all other
+    running passes are immediately cancelled to save resources.
+
+    Args:
+        num_of_passes: The number of parallel proof search attempts.
+        (Other args are passed down to the single-pass function)
+
+    Returns:
+        A dictionary with the result of the first successful pass, or the result
+        of the first completed pass if none were successful.
+    """
+    problem_name_list = [f"{problem_name}_pass{i}" for i in range(num_of_passes)]
+
+    # Create a list of tasks, one for each pass
+    task_list = [
+        asyncio.create_task(mediumweight_inference_single(
+            inference_scheduler=inference_scheduler,
+            compilation_scheduler=compilation_scheduler,
+            problem_statement=problem_statement,
+            problem_name=problem_name_i,
+            model_name=model_name,
+            num_of_revision=num_of_revision,
+            num_of_passes=num_of_passes, # Note: num_of_passes for subproblems
+            problem_index=problem_index,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p
+        ))
+        for problem_name_i in problem_name_list
+    ]
+
+    successful_result = None
+    completed_results = []
+
+    # Process tasks as they complete
+    for future in asyncio.as_completed(task_list):
+        try:
+            result = await future
+            completed_results.append(result)
+
+            # If a complete proof is found, store it and cancel other tasks
+            if result.get("compilation_result", {}).get("complete"):
+                logger.info(f"Success for {problem_name} in one of the passes. Cancelling remaining tasks.")
+                successful_result = result
+                for task in task_list:
+                    if not task.done():
+                        task.cancel()
+                break # Exit the loop once a solution is found
+        except asyncio.CancelledError:
+            logger.info(f"A pass for {problem_name} was cancelled because a solution was found elsewhere.")
+        except Exception as e:
+            logger.error(f"A medium-weight pass for {problem_name} failed with an exception: {e}", exc_info=True)
+
+    # Wait for all cancelled tasks to clean up
+    await asyncio.gather(*task_list, return_exceptions=True)
+
+    # If a successful result was found, return it
+    if successful_result:
+        successful_result['name'] = problem_name # Standardize the name
+        return successful_result
+
+    # Otherwise, if no pass was successful, return the first result that completed
+    logger.warning(f"No successful proof found for {problem_name} after {num_of_passes} passes.")
+    if completed_results:
+        first_result = completed_results[0]
+        first_result['name'] = problem_name
+        return first_result
+    else:
+        # This case happens if all tasks failed with exceptions
+        return {
+            "name": problem_name,
+            "code": "",
+            "compilation_result": {"complete": False, "pass": False, "errors": []},
+            "execution_log": ["All medium-weight passes failed catastrophically."]
+        }
+
+=== File: proofsearch/mediumweight/utils.py ===
+# proofsearch/mediumweight/utils.py
+
+import re
+import logging
+from typing import Dict, List, Set, Tuple, Optional, Any
+
+logger =logging.getLogger(__name__)
+
+class ProofAnalysis:
+    """
+    Analyzes a Lean proof file to extract declarations, identify errors,
+    and construct subproblems for fixing individual proofs.
+    """
+
+    def __init__(self, code: str, errors: List[Dict[str, Any]] = None):
+        """
+        Initializes the analysis of the Lean code.
+
+        Args:
+            code: The full Lean code as a string.
+            errors: A list of error dictionaries from the Lean server.
+        """
+        self.code = code
+        self.errors = errors if errors is not None else []
+        self.lines = self.code.split('\n')
+        
+        # Perform analysis
+        self.header = self._extract_header()
+        self.declarations = self._extract_declarations()
+        self.error_declarations = self._identify_error_declarations()
+
+    def _extract_header(self) -> str:
+        """Extracts the header (imports, opens, set_options) from Lean code."""
+        header_lines = []
+        for line in self.lines:
+            stripped = line.strip()
+            if (stripped.startswith('import') or
+                stripped.startswith('open') or
+                stripped.startswith('set_option') or
+                stripped.startswith('/-') or # Block comments
+                stripped.startswith('--') or # Line comments
+                not stripped):
+                header_lines.append(line)
+            else:
+                # Stop at the first line of actual code
+                break
+        return '\n'.join(header_lines).strip()
+
+    def _extract_declarations(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Extracts information about all top-level declarations (def, axiom, lemma, theorem).
+        """
+        declarations = {}
+        # This pattern captures the declaration type and its name
+        declaration_pattern = r'^\s*(axiom|lemma|theorem|def)\s+([\w\.]+)'
+        
+        # First pass: Identify all declaration starting lines
+        for i, line in enumerate(self.lines):
+            match = re.match(declaration_pattern, line)
+            if match:
+                decl_type, decl_name = match.groups()
+                declarations[decl_name] = {
+                    'name': decl_name,
+                    'type': decl_type,
+                    'start_line': i + 1,  # 1-indexed
+                    'end_line': i + 1,
+                    'dependencies': set(),
+                    'has_proof': False,
+                    'full_text': ''
+                }
+        
+        # Second pass: Determine end lines, extract full text, and check for proofs
+        decl_names = list(declarations.keys())
+        sorted_decls = sorted(declarations.values(), key=lambda x: x['start_line'])
+
+        for i, decl_info in enumerate(sorted_decls):
+            start_idx = decl_info['start_line'] - 1
+            
+            # The end is the start of the next declaration or the end of the file
+            end_idx = len(self.lines)
+            if i + 1 < len(sorted_decls):
+                end_idx = sorted_decls[i+1]['start_line'] - 1
+            
+            decl_info['end_line'] = end_idx
+            full_text = '\n'.join(self.lines[start_idx:end_idx]).strip()
+            decl_info['full_text'] = full_text
+            
+            # A lemma/theorem has a proof if it contains ':= by' or ':='
+            if decl_info['type'] in ['lemma', 'theorem'] and (':=' in full_text):
+                decl_info['has_proof'] = True
+
+        # Third pass: Extract dependencies
+        for name, info in declarations.items():
+            # Only lemmas and theorems have proofs where we check for dependencies
+            if info['type'] in ['lemma', 'theorem', 'def']:
+                text_to_check = info['full_text']
+                for other_name in decl_names:
+                    if other_name != name:
+                        # Use word boundaries to avoid matching parts of other names
+                        pattern = r'\b' + re.escape(other_name) + r'\b'
+                        if re.search(pattern, text_to_check):
+                            info['dependencies'].add(other_name)
+        
+        return declarations
+
+    def _identify_error_declarations(self) -> Set[str]:
+        """Identifies which declarations have compilation errors based on error positions."""
+        error_decls = set()
+        for error in self.errors:
+            error_line = error.get('pos', {}).get('line', 0)
+            if not error_line:
+                continue
+
+            for name, info in self.declarations.items():
+                if info['start_line'] <= error_line <= info['end_line']:
+                    # Only mark lemmas and theorems as having errors, as they are the ones with proofs to fix.
+                    if info['type'] in ['lemma', 'theorem']:
+                        error_decls.add(name)
+                    break # Move to the next error once a container is found
+        return error_decls
+
+    def construct_subproblem(self, lemma_name: str) -> str:
+        """
+        Constructs a subproblem for proving a single lemma.
+        The subproblem includes the header, all definitions, all axioms, and all
+        correct lemmas/theorems converted to axioms.
+        """
+        if lemma_name not in self.declarations or self.declarations[lemma_name]['type'] not in ['lemma', 'theorem']:
+            raise ValueError(f"'{lemma_name}' is not a valid lemma or theorem to construct a subproblem for.")
+
+        target_decl = self.declarations[lemma_name]
+        
+        # Convert the target lemma to a theorem and remove its proof
+        target_text = target_decl['full_text']
+        if target_text.startswith('lemma'):
+            theorem_text = target_text.replace('lemma', 'theorem', 1)
+        else:
+            theorem_text = target_text
+
+        # Remove the proof part and replace with sorry
+        if ':=' in theorem_text:
+            theorem_text = theorem_text.split(':=', 1)[0].strip() + ' := by sorry'
+        else: # Should not happen for a valid lemma
+            theorem_text += ' := by sorry'
+
+        context_parts = []
+        # Add all context declarations in their original order
+        sorted_decls = sorted(self.declarations.values(), key=lambda x: x['start_line'])
+
+        for info in sorted_decls:
+            name = info['name']
+            decl_type = info['type']
+            
+            # Skip the target lemma itself
+            if name == lemma_name:
+                continue
+
+            # Include all definitions and axioms
+            if decl_type in ['def', 'axiom']:
+                context_parts.append(info['full_text'])
+            # Include correct lemmas/theorems as axioms
+            elif decl_type in ['lemma', 'theorem'] and name not in self.error_declarations:
+                decl_text = info['full_text']
+                
+                # Convert to axiom format by changing keyword and removing proof
+                if decl_text.startswith('lemma'):
+                    axiom_text = decl_text.replace('lemma', 'axiom', 1)
+                else: # theorem
+                    axiom_text = decl_text.replace('theorem', 'axiom', 1)
+                
+                if ':=' in axiom_text:
+                    axiom_text = axiom_text.split(':=', 1)[0].strip()
+                
+                context_parts.append(axiom_text)
+
+        full_context = '\n\n'.join(context_parts)
+        return f"{self.header}\n\n{full_context}\n\n{theorem_text}"
+
+    def _get_error_str(self) -> str:
+        """Formats the errors into a readable string by annotating the full code."""
+        # if not self.errors:
+        #     return "No errors found."
+
+        # 1. Map errors to lines
+        errors_by_line: Dict[int, List[int]] = {}  # map line_num (1-indexed) to list of error indices
+        for i, error in enumerate(self.errors):
+            pos = error.get('pos')
+            if not pos:
+                continue
+            line_num = pos['line']
+            if line_num not in errors_by_line:
+                errors_by_line[line_num] = []
+            errors_by_line[line_num].append(i + 1)  # Use 1-based error index
+
+        # 2. Build the annotated code block
+        annotated_code_lines = []
+        header = "Here is the full code with errors annotated.\n" \
+                 "Each error is marked with a comment indicating its number,\n" \
+                 "which corresponds to the detailed error messages below.\n"
+        annotated_code_lines.append(header)
+        annotated_code_lines.append("```lean")
+        
+        max_line_num_width = len(str(len(self.lines)))
+
+        for i, line in enumerate(self.lines):
+            line_num = i + 1
+            line_prefix = f"{line_num: >{max_line_num_width}}: "
+            
+            error_markers = ""
+            if line_num in errors_by_line:
+                markers = [f"Error [{idx}]" for idx in sorted(errors_by_line[line_num])]
+                # Add some space to align comments if possible
+                padding = " " * max(1, 70 - len(line) - len(line_prefix))
+                error_markers = f"{padding}-- {', '.join(markers)}"
+
+            annotated_code_lines.append(f"{line_prefix}{line}{error_markers}")
+        annotated_code_lines.append("```\n")
+
+        # 3. Build the error details block
+        error_details_lines = ["--- Error Details ---"]
+        for i, error in enumerate(self.errors):
+            pos = error.get('pos', {})
+            line_num = pos.get('line', '?')
+            col_num = pos.get('column', '?')
+            msg = error.get('data', 'N/A')
+            error_details_lines.append(f"[{i + 1}] On line {line_num}, column {col_num}: {msg}")
+
+        return '\n'.join(annotated_code_lines) + '\n'.join(error_details_lines)
+
+    def report(self) -> str:
+        """Generates a full analysis report of the proof."""
+        report_parts = []
+        report_parts.append("=" * 50)
+        report_parts.append("Lean Proof Analysis Report")
+        report_parts.append("=" * 50)
+        
+        report_parts.append("\n--- Annotated Code with Errors ---")
+        report_parts.append(self._get_error_str())
+        
+        report_parts.append("\n--- Declaration Analysis ---")
+        sorted_decls = sorted(self.declarations.values(), key=lambda x: x['start_line'])
+
+        for info in sorted_decls:
+            name = info['name']
+            decl_type = info['type'].upper()
+            status = ""
+            if info['type'] in ['lemma', 'theorem']:
+                is_error = name in self.error_declarations
+                status = " (ERROR)" if is_error else " (Correct)"
+            
+            report_parts.append(f"\n{decl_type}: {name}{status}")
+            
+            deps = info['dependencies']
+            if deps:
+                report_parts.append(f"  Dependencies: {', '.join(sorted(list(deps)))}")
+            else:
+                 report_parts.append(f"  Dependencies: None")
+
+
+        return '\n'.join(report_parts)
+
+    def fix_lemma(self, lemma_name: str, fixed_subproblem_code: str):
+        """
+        Replaces a lemma/theorem in the original code with its fixed version
+        and updates the analysis state. Also handles new lemmas introduced in the fix.
+        """
+        if lemma_name not in self.declarations:
+            logger.warning(f"Cannot fix '{lemma_name}': not found in original code.")
+            return
+
+        # 1. Parse the fixed subproblem to extract all declarations
+        fixed_lines = fixed_subproblem_code.split('\n')
+        declaration_pattern = r'^\s*(axiom|lemma|theorem|def)\s+([\w\.]+)'
+        
+        # Find all declarations in the fixed code
+        fixed_declarations = {}
+        for i, line in enumerate(fixed_lines):
+            match = re.match(declaration_pattern, line)
+            if match:
+                decl_type, decl_name = match.groups()
+                fixed_declarations[decl_name] = {
+                    'type': decl_type,
+                    'start_line': i,
+                    'name': decl_name
+                }
+        
+        # Determine end lines for each declaration
+        sorted_fixed_decls = sorted(fixed_declarations.values(), key=lambda x: x['start_line'])
+        for i, decl_info in enumerate(sorted_fixed_decls):
+            start_idx = decl_info['start_line']
+            end_idx = len(fixed_lines)
+            if i + 1 < len(sorted_fixed_decls):
+                end_idx = sorted_fixed_decls[i + 1]['start_line']
+            decl_info['end_line'] = end_idx
+            decl_info['text'] = '\n'.join(fixed_lines[start_idx:end_idx]).strip()
+        
+        # 2. Find the target lemma in the fixed code
+        if lemma_name not in fixed_declarations:
+            logger.warning(f"Could not find declaration for '{lemma_name}' in the provided fixed code.")
+            return
+        
+        target_fixed_decl = fixed_declarations[lemma_name]
+        new_decl_text = target_fixed_decl['text']
+        
+        # 3. Convert back to original type if necessary
+        original_info = self.declarations[lemma_name]
+        if original_info['type'] == 'lemma' and new_decl_text.startswith('theorem'):
+            new_decl_text = new_decl_text.replace('theorem', 'lemma', 1)
+        elif original_info['type'] == 'theorem' and new_decl_text.startswith('lemma'):
+            new_decl_text = new_decl_text.replace('lemma', 'theorem', 1)
+        
+        # 4. Identify new lemmas that need to be added
+        new_lemmas = []
+        for decl_name, decl_info in fixed_declarations.items():
+            # Skip axioms and defs as they should already be in context
+            if decl_info['type'] in ['axiom', 'def']:
+                continue
+            # Skip the target lemma itself
+            if decl_name == lemma_name:
+                continue
+            # Check if this is a new lemma/theorem not in original
+            if decl_name not in self.declarations:
+                new_lemmas.append(decl_info)
+        
+        # Sort new lemmas by their appearance order in fixed code
+        new_lemmas.sort(key=lambda x: x['start_line'])
+        
+        # 5. Build the replacement text
+        replacement_parts = []
+        
+        # Add any new lemmas first (they might be helper lemmas)
+        for new_lemma_info in new_lemmas:
+            lemma_text = new_lemma_info['text']
+            # Ensure proper type (convert theorem to lemma if needed for consistency)
+            if lemma_text.startswith('theorem'):
+                lemma_text = lemma_text.replace('theorem', 'lemma', 1)
+            replacement_parts.append(lemma_text)
+        
+        # Add the fixed target lemma
+        replacement_parts.append(new_decl_text)
+        
+        replacement_text = '\n\n'.join(replacement_parts)
+        
+        # 6. Replace in the original code
+        start_line_idx = original_info['start_line'] - 1
+        end_line_idx = original_info['end_line']
+        
+        new_lines = self.lines[:start_line_idx]
+        new_lines.extend(replacement_text.split('\n'))
+        new_lines.extend(self.lines[end_line_idx:])
+        
+        self.code = '\n'.join(new_lines)
+        
+        # 7. Re-run analysis and update state
+        self.lines = self.code.split('\n')
+        self.declarations = self._extract_declarations()
+        
+        # Remove the fixed lemma from error declarations
+        if lemma_name in self.error_declarations:
+            self.error_declarations.remove(lemma_name)
+        
+        # Clear stale errors related to the replaced lines
+        self.errors = [e for e in self.errors 
+                    if e.get('pos', {}).get('line', 0) < start_line_idx + 1 
+                    or e.get('pos', {}).get('line', 0) > end_line_idx]
+        
+        # Log the changes made
+        if new_lemmas:
+            new_lemma_names = [info['name'] for info in new_lemmas]
+            logger.info(f"Added new lemmas while fixing '{lemma_name}': {', '.join(new_lemma_names)}")
+
+    def is_proof_correct(self) -> bool:
+        """
+        Checks if there are any remaining declarations with errors.
+        Returns True if the proof is fully correct, False otherwise.
+        """
+        return not self.error_declarations
+
+
+# --- Test Cases ---
+if __name__ == "__main__":
+    # Test case 2
+    test_code2 = """
+import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+def q_seq_step (m : ℕ) (q_prev : ℚ) : ℚ :=
+  ((q_prev.num + m * q_prev.den : ℚ) / (q_prev.den + 1 : ℚ))
+
+axiom squarefree_of_pos (a b : ℕ) (ha : 0 < a) (hb : 0 < b) (hab : a < b) :
+  Squarefree (a + b)
+
+lemma Set_Ioi_infinite : Infinite (Set.Ioi (0 : ℕ)) := by
+  exact Set.infinite_Ioi
+
+lemma Set_Ioi_pos : ∀ x ∈ Set.Ioi (0 : ℕ), x > 0 := by
+  intro x hx
+  rcases (Set.mem_Ioi).1 hx with h0
+  exact h0
+
+lemma Set_Ioi_squarefree :
+    ∀ a ∈ Set.Ioi (0 : ℕ), ∀ b ∈ Set.Ioi (0 : ℕ), a < b → Squarefree (a + b) := by
+  intro a ha b hb hab
+  have ha_pos : 0 < a := by
+    rcases (Set.mem_Ioi).1 ha with h0
+    exact h0
+  have hb_pos : 0 < b := by
+    rcases (Set.mem_Ioi).1 hb with h0
+    exact h0
+
+  exact squarefree_of_pos a b ha_pos hb_pos hab
+
+theorem omni_math_problem_73 : ∃ M : Set ℕ, Infinite M ∧ (∀ x ∈ M, x > 0) ∧ (∀ a ∈ M, ∀ b ∈ M, a < b → Squarefree (a + b)) := by
+  refine' ⟨Set.Ioi (0 : ℕ), ?_, ?_, ?_⟩
+  simp
+  · exact Set_Ioi_infinite
+  · intro x hx
+    exact Set_Ioi_pos x hx
+  · intro a ha b hb hab
+    exact Set_Ioi_squarefree a ha b hb hab
+"""
+    test_errors2 = [{'severity': 'error', 'pos': {'line': 16, 'column': 8}, 'endPos': {'line': 16, 'column': 24}, 'data': "unknown constant 'Set.infinite_Ioi'"}, {'severity': 'error', 'pos': {'line': 38, 'column': 2}, 'endPos': {'line': 38, 'column': 6}, 'data': 'simp made no progress'}]
+
+    print("\n\n--- Running Test Case 2: Initial Analysis ---")
+    analysis2 = ProofAnalysis(test_code2, test_errors2)
+    print(analysis2.report())
+    print(f"\nIs proof correct before fixes? {analysis2.is_proof_correct()}")
+    
+    # --- Provided fixes ---
+    fixed_code_1 = """
+import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+def q_seq_step (m : ℕ) (q_prev : ℚ) : ℚ :=
+  ((q_prev.num + m * q_prev.den : ℚ) / (q_prev.den + 1 : ℚ))
+
+axiom squarefree_of_pos (a b : ℕ) (ha : 0 < a) (hb : 0 < b) (hab : a < b) :
+  Squarefree (a + b)
+
+axiom Set_Ioi_pos : ∀ x ∈ Set.Ioi (0 : ℕ), x > 0
+
+axiom Set_Ioi_squarefree :
+    ∀ a ∈ Set.Ioi (0 : ℕ), ∀ b ∈ Set.Ioi (0 : ℕ), a < b → Squarefree (a + b)
+
+theorem Set_Ioi_infinite : Infinite (Set.Ioi (0 : ℕ)) := by
+  simp
+"""
+    
+    fixed_code_2 = """
+import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+def q_seq_step (m : ℕ) (q_prev : ℚ) : ℚ :=
+  ((q_prev.num + m * q_prev.den : ℚ) / (q_prev.den + 1 : ℚ))
+
+axiom squarefree_of_pos (a b : ℕ) (ha : 0 < a) (hb : 0 < b) (hab : a < b) :
+  Squarefree (a + b)
+
+axiom Set_Ioi_pos : ∀ x ∈ Set.Ioi (0 : ℕ), x > 0
+
+axiom Set_Ioi_squarefree :
+    ∀ a ∈ Set.Ioi (0 : ℕ), ∀ b ∈ Set.Ioi (0 : ℕ), a < b → Squarefree (a + b)
+    
+axiom Set_Ioi_infinite : Infinite (Set.Ioi (0 : ℕ))
+          
+lemma  left_inv_at_one (σ : Equiv ℝ ℝ) (h₂ : σ.2 1 = 2) : σ.1 2 = 1 := by                                                                                                     
+                                                                                                                                                                              
+  have h : σ.1 (σ.2 1) = (1 : ℝ) := by                                                                                                                                        
+                                                                                                                                                                              
+    simpa using congrArg σ.1 (σ.right_inv (1 : ℝ))
+   
+  simpa [h₂] using h
+
+theorem omni_math_problem_73 : ∃ M : Set ℕ, Infinite M ∧ (∀ x ∈ M, x > 0) ∧ (∀ a ∈ M, ∀ b ∈ M, a < b → Squarefree (a + b)) := by
+  refine' ⟨Set.Ioi (0 : ℕ), ?_, ?_, ?_⟩
+  rw [left_inv_at_one (Equiv.setCongr (Set.Ioi (0 : ℕ)) (Set.Ioi (0 : ℕ)) (Equiv.refl (ℕ))) rfl]
+  · exact Set_Ioi_infinite
+  · intro x hx
+    exact Set_Ioi_pos x hx
+  · intro a ha b hb hab
+    exact Set_Ioi_squarefree a ha b hb hab
+"""
+    
+    print("\n\n--- Applying Fixes ---")
+    
+    # Error at line 16 is in 'Set_Ioi_infinite'
+    print("Fixing 'Set_Ioi_infinite'...")
+    analysis2.fix_lemma('Set_Ioi_infinite', fixed_code_1)
+    
+    # Error at line 38 is in 'omni_math_problem_73'
+    print("Fixing 'omni_math_problem_73'...")
+    analysis2.fix_lemma('omni_math_problem_73', fixed_code_2)
+    
+    print("\n\n--- Running Test Case 2: Final Analysis After Fixes ---")
+    print(analysis2.report())
+    print(f"\nIs proof correct after fixes? {analysis2.is_proof_correct()}")
+
+
+
+=== File: proofsearch/lightweight/handler.py ===
+
+
+=== File: proofsearch/lightweight/lightweightsearch.py ===
+import asyncio
+
+import logging
+
+from .lightweight_utils import InferenceHandler, RevisionHandler
+
+# --- Basic Configuration ---
+logger = logging.getLogger(__name__)
+
+P_INITIAL = 16
+
+async def lightweight_inference_single(
+    inference_scheduler, 
+    compilation_scheduler, 
+    problem_statement: str, 
+    problem_name: str, 
+    model_name: str, 
+    num_of_revision: int = 2,
+    problem_index: int = 1,
+    facts: list = None,
+    max_tokens: int = 24000,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> dict:
+    """
+    Performs an initial inference and compilation, followed by a series of revisions.
+
+    Returns:
+        A dictionary containing the final code and its compilation result.
+    """
+    # --- 1. Initial Inference and Compilation ---
+    logger.info(f"Starting initial inference for problem: {problem_name}")
+    inference_input = InferenceHandler.format_input(problem_statement, facts)
+
+    # for larger problems index, the priority number will be larger (lower priority)
+    base_priority = problem_index * P_INITIAL
+    
+    extra_params = {
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    # Await the inference result
+    num_of_revision_left = num_of_revision
+    # if during the initial inference, exception/error happens, then just retry
+    # make the number of revisions left smaller (such that the total number of inference is bounded)
+    while num_of_revision_left >= 0:
+        try:
+            inference_output = await inference_scheduler.inference(
+                prompt=inference_input, 
+                model=model_name, 
+                priority=base_priority,
+                extra_params=extra_params
+            )
+            lean_code = InferenceHandler.process_output(inference_output, problem_statement, facts)
+            break
+        except Exception as e:
+            logger.warning(f"An error occurred during initial inference for {problem_name}: {e}")
+            num_of_revision_left -= 1
+            if num_of_revision_left >= 0:
+                logger.warning(f"retry initial inference, num of revision left: {num_of_revision_left}")
+            else:
+                # if error happens at initial inference, then probably should just return
+                return {"code": "", "compilation_result": {"pass": False, "complete": False, "errors": [f"Initial inference failed: {e}"]}}
+    compilable_code = lean_code  # Placeholder for any additional synchronous code processing
+
+    logger.debug(compilable_code)
+
+    # Await the compilation result
+    logger.info(f"Submitting initial proof for {problem_name} for compilation...")
+    try:
+        compilation_info = await compilation_scheduler.compile(name=problem_name, code=compilable_code)
+    except Exception as e:
+        logger.error(f"An error occurred during initial compilation for {problem_name}: {e}")
+        parsed_result = {"pass": False, "complete": False, "system_errors": [f"Initial compilation failed: {e}"]}
+        # use this error to go to the next revision
+        compilation_info = {"code": compilable_code, "compilation_result": parsed_result}
+    
+    # Safely extract the nested result dictionary
+    compilation_result = compilation_info.get('compilation_result', {}) if compilation_info else {}
+
+    # If the first attempt is a complete proof, we're done!
+    if compilation_result.get('complete'):
+        logger.info(f"\n\n\nSuccess on first attempt for {problem_name}!\n\n\n")
+        logger.info(f'{compilable_code}\n\n\n')
+        return {"name": problem_name, "code": compilable_code, "compilation_result": compilation_result}
+    
+    # --- 2. Revision Loop ---
+    last_code = compilable_code
+    last_errors = compilation_result.get('errors', [])
+    
+    for revision_round in range(num_of_revision_left):
+        logger.info(f"Starting revision round {revision_round + 1}/{num_of_revision_left} for {problem_name}...")
+        
+        revision_input = RevisionHandler.format_input(problem_statement, last_code, last_errors, facts)
+
+        logger.debug('\n\n\nrevision input\n\n\n')
+        logger.debug(revision_input)
+        logger.debug('\n\n\n')
+        
+        # Await the revision inference, giving it a higher priority
+        try:
+            revision_output = await inference_scheduler.inference(
+                prompt=revision_input, 
+                model=model_name, 
+                priority=(base_priority-revision_round-1),
+                extra_params=extra_params
+            )
+
+            if not revision_output:
+                logger.warning(f"Revision inference failed for {problem_name} on round {revision_round + 1}.")
+                continue # Skip to the next revision attempt
+            logger.debug('\n\n\nrevision output\n\n\n')
+            logger.debug(revision_output)
+            logger.debug('\n\n\n')
+
+            lean_code = RevisionHandler.process_output(revision_output, problem_statement, facts)
+        except Exception as e:
+            logger.warning(f"An error occurred during revision round {revision_round+1} for {problem_name}: {e}")
+            if revision_round != num_of_revision - 1:
+                # just do another revision, skip the current round
+                logger.warning(f"use previous code and error")
+                continue
+            # if error happens in the last revision round, then probably should just return
+            return {"code": "", "compilation_result": {"pass": False, "complete": False, "errors": [f"Initial inference failed: {e}"]}}
+        compilable_code = lean_code
+
+        # Await the revised compilation, giving it a unique name for tracking
+        revision_name = f"{problem_name}_rev{revision_round + 1}"
+        logger.info(f"Submitting revised proof {revision_name} for compilation...")
+        try:
+            compilation_info = await compilation_scheduler.compile(name=problem_name, code=compilable_code)
+        except Exception as e:
+            logger.warning(f"An error occurred during revision round {revision_round+1} for {problem_name}: {e}")
+            if revision_round != num_of_revision - 1:
+                # just do another revision, skip the current round
+                logger.warning(f"use previous code and error")
+                continue
+            parsed_result = {"pass": False, "complete": False, "system_errors": [f"Compilation failed: {e}"]}
+            # use this error to go to the next revision
+            compilation_info = {"code": compilable_code, "compilation_result": parsed_result}
+        
+        compilation_result = compilation_info.get('compilation_result', {}) if compilation_info else {}
+
+        # If a revision is a complete proof, we're done!
+        if compilation_result.get('complete'):
+            logger.info(f"\n\n\nSuccess on revision {revision_round + 1} for {problem_name}!\n\n\n")
+            logger.info(f'{compilable_code}\n\n\n')
+            return {"name": problem_name, "code": compilable_code, "compilation_result": compilation_result}
+        
+        # Update state for the next loop iteration
+        last_code = compilable_code
+        last_errors = compilation_result.get('errors', [])
+    
+    # --- 3. Final Return ---
+    # If no attempt succeeded, return the result of the last revision attempt
+    logger.info(f"Lightweight search for {problem_name} concluded without a complete proof.")
+    return {"name": problem_name, "code": last_code, "compilation_result": compilation_result}
+
+async def lightweight_inference(inference_scheduler, 
+    compilation_scheduler, 
+    problem_statement: str, 
+    problem_name: str, 
+    model_name: str, 
+    num_of_revision: int = 2,
+    num_of_passes: int = 8,
+    problem_index: int = 1,
+    facts: list = None,
+    max_tokens: int = 24000,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> dict:
+    problem_name_list = [f"{problem_name}_pass{i}" for i in range(num_of_passes)]
+    # create tasks
+    task_list = [
+        asyncio.create_task(lightweight_inference_single(
+            inference_scheduler,
+            compilation_scheduler, 
+            problem_statement, 
+            problem_name_i, 
+            model_name, 
+            num_of_revision,
+            problem_index,
+            facts,
+            max_tokens,
+            temperature,
+            top_p)) 
+            for problem_name_i in problem_name_list
+    ]
+    return_dict = dict()
+    completed_results = []
+    success = False
+
+    # iterate over task as they complete
+    for future in asyncio.as_completed(task_list):
+        try:
+            result = await future
+            completed_results.append(result)
+            if result['compilation_result']["complete"]:
+                return_dict = result
+                success = True
+                # cancel tasks
+                for t in task_list:
+                    if not t.done():
+                        t.cancel()
+                break
+        except asyncio.CancelledError:
+            logger.info("A task was cancelled because a solution was found.")
+        except Exception as e:
+            logger.error(f"A task failed with an exception: {e}")
+    
+    if not success:
+        logger.info("No task succeeded with a complete proof.")
+        if completed_results:
+            logger.info("Returning the first result from the completed passes.")
+            return completed_results[0]
+        else:
+            # This handles the edge case where all tasks failed with exceptions
+            logger.warning("No results were collected. All tasks may have failed.")
+            return {"name": problem_name, "code": "", "compilation_result": {"pass": False, "complete": False, "errors": ["All passes failed to produce a result."]}}
+
+    return_dict['name'] = problem_name
+    return return_dict
+
+=== File: proofsearch/lightweight/lightweight_utils.py ===
+import logging
+import re
+from abc import ABC, abstractmethod
+
+from .prompt_templates import INFERENCE_NOFACTS_TEMPLATE, REVISION_NOFACTS_TEMPLATE, INFERENCE_NOAXIOMS_LEMMA_OUTPUT_TEMPLATE,INFERENCE_AXIOMS_LEMMA_OUTPUT_TEMPLATE,REVISION_NOAXIOMS_LEMMA_OUTPUT_TEMPLATE,REVISION_AXIOMS_LEMMA_OUTPUT_TEMPLATE
+
+# --- Basic Configuration ---
+logger = logging.getLogger(__name__)
+
+##############################################################
+### Functions to process the lean code
+##############################################################
+
+DEFAULT_HEADER = "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\n"
+
+DEFAULT_HEADER_NO_OPEN = "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\n"
+
+def remove_lean_comments(lean_code: str) -> str:
+    """
+    Removes single-line (--) and multi-line (/- ... -/) comments from a Lean proof string.
+    
+    This function correctly handles nested multi-line comments by keeping track of the
+    nesting depth. It works for both multi-line string literals and single-line
+    string literals containing newline characters (\\n).
+
+    Args:
+        lean_code: A string containing the Lean code.
+
+    Returns:
+        A new string with all comments removed.
+    """
+    
+    # --- State Variables ---
+    # nesting_level tracks the depth of nested multi-line comments.
+    # A value of 0 means we are not inside a multi-line comment.
+    nesting_level = 0
+    # in_single_line_comment is a flag for single-line comments.
+    in_single_line_comment = False
+    
+    # We build the output string in a list of characters for efficiency.
+    result_parts = []
+    
+    # We use a manual index `i` to iterate through the string. This allows us
+    # to look ahead two characters (e.g., for '/-' or '--') and skip ahead.
+    i = 0
+    n = len(lean_code)
+    
+    while i < n:
+        # --- State: Inside a multi-line comment ---
+        if nesting_level > 0:
+            # Check for the start of a nested multi-line comment
+            if lean_code[i:i+2] == '/-':
+                nesting_level += 1
+                i += 2
+            # Check for the end of a multi-line comment
+            elif lean_code[i:i+2] == '-/':
+                nesting_level -= 1
+                i += 2
+            # Otherwise, this character is part of the comment, so we skip it
+            else:
+                i += 1
+        
+        # --- State: Inside a single-line comment ---
+        elif in_single_line_comment:
+            # A single-line comment ends at the next newline character
+            if lean_code[i] == '\n':
+                in_single_line_comment = False
+                # It's important to preserve the newline to maintain line structure
+                result_parts.append('\n')
+            # Move to the next character
+            i += 1
+            
+        # --- State: Not in any comment ---
+        else:
+            # Check for the start of a multi-line comment
+            if lean_code[i:i+2] == '/-':
+                nesting_level += 1
+                i += 2
+            # Check for the start of a single-line comment
+            elif lean_code[i:i+2] == '--':
+                in_single_line_comment = True
+                i += 2
+            # If not a comment, this character is part of the code
+            else:
+                result_parts.append(lean_code[i])
+                i += 1
+                
+    # Join all the collected parts into the final, clean string
+    return "".join(result_parts)
+
+def split_proof_at_first_statement(proof):
+    """
+    Splits the proof string into two parts at the first appearance of 'axiom', 'lemma', or 'theorem'.
+    Returns a tuple: (before, after), where 'after' starts with the matched keyword.
+    """
+    match = re.search(r'\b(axiom|lemma|theorem)\b', proof)
+    if match:
+        idx = match.start()
+        logger.debug(f"proof is splitted into {proof[:idx]} and {proof[idx:]}")
+        return proof[:idx], proof[idx:]
+    else:
+        logger.debug(f"{proof} is not splitted")
+        return proof, ''  # No keyword found
+
+def remove_imports_from_proof(proof):
+	"""
+	Remove all single-line import statements (lines starting with 'import') from a Lean proof.
+	"""
+	_, body = split_proof_at_first_statement(proof)
+	return body.strip()
+
+def remove_comments_and_axioms_from_proof(proof):
+    """
+    Remove all axiom blocks (which may span multiple lines) from a Lean proof.
+    An axiom block ends with a blank line (\n\n).
+    """
+    # at this point, very "brute force" methods. find the first lemma and throw away
+    # everything before
+    proof = remove_lean_comments(proof).strip()
+    #
+    if 'lemma' in proof:
+        proof_split = proof.split('lemma')
+        proof = 'lemma' + 'lemma'.join(proof_split[1:])
+        return proof.strip()
+    else:
+        # use theorem
+        proof_split = proof.split('theorem')
+        proof = 'theorem' + 'theorem'.join(proof_split[1:])
+        return proof.strip()
+
+def substitute_final_theorem(lean_proof: str, problem_statement: str) -> str:
+    """
+    Substitutes the final theorem signature in a Lean proof with the one from a
+    given problem statement, while preserving the original proof block.
+
+    This function finds the last occurrence of the keyword "theorem", replaces
+    the signature (everything before ':=') with the signature from the problem
+    statement, and keeps the original proof (everything after ':='). It correctly
+    discards any 'import' or 'open' statements from the problem statement.
+
+    Args:
+        lean_proof: The string containing the full Lean proof.
+        problem_statement: The string containing the new theorem signature, which
+                           may end in ':= by sorry'.
+
+    Returns:
+        A new string with the final theorem signature replaced.
+    """
+    # --- 1. Normalize the input strings ---
+    proof = lean_proof.strip()
+    problem = problem_statement.strip()
+
+    # --- 2. Find the start of the last theorem in the original proof ---
+    last_theorem_index = proof.rfind('\ntheorem ')
+    if last_theorem_index == -1 and proof.startswith('theorem '):
+        last_theorem_index = 0
+
+    # --- 3. If a theorem is found, perform the substitution ---
+    if last_theorem_index != -1:
+        # --- 3a. Isolate the parts of the original proof ---
+        proof_prefix = proof[:last_theorem_index]
+        final_theorem_block = proof[last_theorem_index:]
+        
+        proof_start_index = final_theorem_block.find(':=')
+        if proof_start_index == -1:
+            return proof_prefix.strip() + "\n\n" + problem
+
+        original_proof_part = final_theorem_block[proof_start_index:]
+
+        # --- 3b. Isolate ONLY the theorem signature from the problem statement ---
+        # First, find the start of the theorem keyword to ignore imports/open
+        problem_theorem_start_index = problem.rfind('\ntheorem ')
+        if problem_theorem_start_index == -1 and problem.startswith('theorem '):
+            problem_theorem_start_index = 0
+        
+        if problem_theorem_start_index == -1:
+            # Fallback: No theorem found in problem statement
+            return proof_prefix.strip() + "\n\n" + problem
+
+        # Now find the end of the signature
+        signature_end_index = problem.rfind(':=')
+        if signature_end_index == -1:
+            return proof_prefix.strip() + "\n\n" + problem
+
+        # Extract just the theorem signature, excluding imports
+        new_signature_part = problem[problem_theorem_start_index:signature_end_index]
+
+        # --- 3c. Combine the parts to form the new proof ---
+        return proof_prefix.strip() + "\n\n" + new_signature_part.strip() + " " + original_proof_part.strip()
+    else:
+        # Edge Case: If no "theorem" keyword is found, append the problem statement.
+        return proof + "\n\n" + problem
+
+def extract_open_line(header: str):
+    """
+    Returns the first line in the proof that starts with 'open' (ignoring leading whitespace).
+    Returns None if no such line exists.
+    """
+    for line in header.splitlines():
+        if line.strip().startswith('open'):
+            return line
+    return None
+
+def process_import_part(header):
+    line = extract_open_line(header)
+    if not line:
+        return DEFAULT_HEADER
+    return DEFAULT_HEADER_NO_OPEN+line+'\n\n'
+
+##############################################################
+### Function to parse error message from lean code
+##############################################################
+
+# helper function to parse error str
+def get_error_str(code, errors, error_thres):
+    err_str = ""
+    code_lines = code.split('\n')
+    token_lengths = [len(line) + 1 for line in code_lines]
+    
+    error_num_thres = 8 if error_thres else len(errors)
+
+    for i, error in enumerate(errors[:error_num_thres]):
+        start_line = error['pos']['line'] - 1
+        start_col = error['pos']['column']
+
+        if error['endPos'] is None:
+            end_line = start_line
+            end_col = len(code_lines[start_line])
+        else:
+            end_line = error['endPos']['line'] - 1
+            end_col = error['endPos']['column']
+
+        start_char_pos = sum(token_lengths[:start_line]) + start_col
+        end_char_pos = sum(token_lengths[:end_line]) + end_col
+        
+        err_str += f"\nError {i + 1}:\n"
+        err_str += f"\nCorresponding Code:\n```lean4\n"
+        
+        error_code = ""
+        for ii in range(-4, 0):
+            if start_line + ii >= 0:
+                error_code += f"{code_lines[start_line + ii]}\n"
+        if start_line != end_line:
+            error_code += code_lines[start_line][:start_col] + "<error>" + code_lines[start_line][start_col:] + "\n"
+            
+            if not error_thres:
+                for j in range(start_line + 1, end_line):
+                    error_code += f"{code_lines[j]}\n"
+            else:
+                show_line = 6
+                for j in range(start_line + 1, min(end_line, start_line + show_line)):
+                    error_code += f"{code_lines[j]}\n"
+                if end_line > start_line + show_line:
+                    leading_spaces = len(code_lines[j]) - len(code_lines[j].lstrip(' '))
+                    error_code += "\n" + " " * leading_spaces + "... --[Truncated]-- ...\n"
+
+            error_code += code_lines[end_line][:end_col] + "</error>" + code_lines[end_line][end_col:] + "\n"
+        else:
+            error_code += code_lines[start_line][:start_col] + "<error>" + code_lines[start_line][start_col:end_col] + "</error>" + code_lines[start_line][end_col:] + "\n"
+        if end_line + 1 < len(code_lines):
+            error_code += f"{code_lines[end_line + 1]}\n"
+            
+        err_str += error_code
+        err_str += f"\n```\n"
+        err_str += f"\nError Message: {error['data']}\n"
+    
+    if len(errors) > error_num_thres:
+        err_str += f"\n... [Omitted {len(errors) - error_num_thres} more errors] ...\n"
+        
+    return err_str
+
+
+class LightweightHandler(ABC):
+    """
+    Abstract base class for handling LLM input and output for lightweight search tasks.
+    """
+    @classmethod
+    @abstractmethod
+    def format_input(cls, *args, **kwargs):
+        """Prepare the input for the LLM."""
+        pass
+
+    @classmethod
+    @abstractmethod
+    def process_output(cls, llm_output, *args, **kwargs):
+        """Process the output from the LLM."""
+        pass
+
+class InferenceHandler(LightweightHandler):
+    @classmethod
+    def format_input(cls, statement, facts=None):
+        # Example: format data for inference
+        if facts == None or (type(facts) == list and len(facts) == 0):
+            # in this case, no proved facts
+            return INFERENCE_NOAXIOMS_LEMMA_OUTPUT_TEMPLATE.format(original_question_lean4=statement)
+        elif type(facts) == list:
+            axiom_str = '\n\n'.join(facts)
+            return INFERENCE_AXIOMS_LEMMA_OUTPUT_TEMPLATE.format(axioms=axiom_str,original_question_lean4=statement)
+        else:
+            raise ValueError("Note implemented revision with proved facts.")
+
+    @classmethod
+    def process_output(cls, output, statement, facts=None):
+        """
+		Extract the last block wrapped by ```lean4 ... ``` from the output.
+		If not found, return the original output.
+		"""
+        use_facts = False
+        axioms_str = ''
+        if type(facts) == list and len(facts) > 0:
+            axioms_str = '\n\n'.join(facts)
+            use_facts = True
+
+        pattern = r"```lean4(.*?)```"
+        pattern1 = r"```lean(.*?)```"
+        matches = re.findall(pattern, output, re.DOTALL)
+        imports_and_opens, statement_body = split_proof_at_first_statement(statement)
+        if matches:
+            return_str = remove_imports_from_proof(remove_comments_and_axioms_from_proof(matches[-1].strip()))
+            return_str = substitute_final_theorem(return_str, statement)
+            return_str = return_str.strip()
+            if 'apply?' in return_str or 'exact?' in return_str:
+                return statement
+            if use_facts:
+                return process_import_part(imports_and_opens) + '\n\n' + axioms_str + '\n\n' + return_str
+            else:
+                return process_import_part(imports_and_opens) + return_str
+        matches1 = re.findall(pattern1, output, re.DOTALL)
+        if matches1:
+            return_str = remove_imports_from_proof(remove_comments_and_axioms_from_proof(matches1[-1].strip()))
+            return_str = substitute_final_theorem(return_str, statement)
+            return_str = return_str.strip()
+            if 'apply?' in return_str or 'exact?' in return_str:
+                return statement
+            if use_facts:
+                return process_import_part(imports_and_opens) + '\n\n' + axioms_str + '\n\n' + return_str
+            else:
+                return process_import_part(imports_and_opens) + return_str
+        return_str = remove_imports_from_proof(remove_comments_and_axioms_from_proof(output.strip()))
+        return_str = substitute_final_theorem(return_str, statement)
+        return_str = return_str.strip()
+        if 'apply?' in return_str or 'exact?' in return_str:
+            return statement
+        return process_import_part(imports_and_opens) + return_str
+
+class RevisionHandler(LightweightHandler):
+    @classmethod
+    def format_input(cls, statement, previous_proof, errors, facts=None):
+        # Example: format data for inference
+        if facts == None or (type(facts) == list and len(facts) == 0):
+            # in this case, no proved facts
+            error_msgs = get_error_str(previous_proof,errors,True)
+            return REVISION_NOAXIOMS_LEMMA_OUTPUT_TEMPLATE.format(original_question_lean4=statement, last_full_proof=previous_proof, error_message_for_prev_round=error_msgs)
+        elif type(facts) == list:
+            error_msgs = get_error_str(previous_proof,errors,True)
+            axiom_str = '\n\n'.join(facts)
+            error_msgs = get_error_str(previous_proof,errors,True)
+            return REVISION_AXIOMS_LEMMA_OUTPUT_TEMPLATE.format(axioms=axiom_str,original_question_lean4=statement, last_full_proof=previous_proof, error_message_for_prev_round=error_msgs)
+        else:
+            raise ValueError("Note implemented revision with proved facts.")
+
+    @classmethod
+    def process_output(cls, output, statement, facts=None):
+        """
+		Extract the last block wrapped by ```lean4 ... ``` from the output.
+		If not found, return the original output.
+		"""
+        use_facts = False
+        axioms_str = ''
+        if type(facts) == list and len(facts) > 0:
+            axioms_str = '\n\n'.join(facts)
+            use_facts = True
+        
+        pattern = r"```lean4(.*?)```"
+        pattern1 = r"```lean(.*?)```"
+        matches = re.findall(pattern, output, re.DOTALL)
+        imports_and_opens, statement_body = split_proof_at_first_statement(statement)
+        if matches:
+            return_str = remove_imports_from_proof(remove_comments_and_axioms_from_proof(matches[-1].strip()))
+            return_str = substitute_final_theorem(return_str, statement)
+            return_str = return_str.strip()
+            if 'apply?' in return_str or 'exact?' in return_str:
+                return statement
+            if use_facts:
+                return process_import_part(imports_and_opens) + '\n\n' + axioms_str + '\n\n' + return_str
+            else:
+                return process_import_part(imports_and_opens) + return_str
+        matches1 = re.findall(pattern1, output, re.DOTALL)
+        if matches1:
+            return_str = remove_imports_from_proof(remove_comments_and_axioms_from_proof(matches1[-1].strip()))
+            return_str = substitute_final_theorem(return_str, statement)
+            return_str = return_str.strip()
+            if 'apply?' in return_str or 'exact?' in return_str:
+                return statement
+            if use_facts:
+                return process_import_part(imports_and_opens) + '\n\n' + axioms_str + '\n\n' + return_str
+            else:
+                return process_import_part(imports_and_opens) + return_str
+        return_str = remove_imports_from_proof(remove_comments_and_axioms_from_proof(output.strip()))
+        return_str = substitute_final_theorem(return_str, statement)
+        return_str = return_str.strip()
+        if 'apply?' in return_str or 'exact?' in return_str:
+            return statement
+        return process_import_part(imports_and_opens) + return_str
+
+
+=== File: proofsearch/lightweight/prompt_templates.py ===
+INFERENCE_NOFACTS_TEMPLATE = """
+Complete the following Lean 4 code:
+
+```lean4
+{original_question_lean4}
+```
+
+Before producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.
+The plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof.
+"""
+
+INFERENCE_NOAXIOMS_LEMMA_OUTPUT_TEMPLATE = """
+I would like you to help me prove a problem in Lean 4.
+
+Before giving you the problem statement, I will first give you several proved facts to you, which may help you to prove the problem. The following proved facts are available to you. These facts are labeled by axiom in Lean 4 and you can directly use them in your proof.
+```
+```
+
+Now, complete the following Lean 4 code:
+
+```lean4
+{original_question_lean4}
+```
+
+Recall that besides the problem to prove, a list of proved facts are also given to you as axioms. If they are helpful, integrate them into your proof. You don't need to use all of them, and you don't need to prove them again. If you want to use additional lemmas that are not listed, you should include the lemmas and their proofs in your final proof.
+
+As an example, your final proof should look like this:
+
+```lean4
+import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+lemma xxx := by some proof (if this lemma is not given in list of facts)
+
+lemma xxx := by some proof (if this lemma is not given in list of facts)
+
+...
+
+theorem xxx := by some proof
+```
+
+Note that if the lean header used in the problem statement is different (for example, import more libraries), you should switch to that header. Also, you are not allowed to write any axioms not listed before. Any new things you write should be either a lemma or a theorem with the corresponding proof.
+Before producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.
+The plan should highlight key ideas, intermediate steps or lemmas, and proof structures that will guide the construction of the final formal proof.
+
+Now please start to prove the problem following the above instructions.
+"""
+
+INFERENCE_AXIOMS_LEMMA_OUTPUT_TEMPLATE = """
+I would like you to help me prove a problem in Lean 4.
+
+Before giving you the problem statement, I will first give you several proved facts to you, which may help you to prove the problem. The following proved facts are available to you. These facts are labeled by axiom in Lean 4 and you can directly use them in your proof.
+```
+{axioms}
+```
+
+Now, complete the following Lean 4 code:
+
+```lean4
+{original_question_lean4}
+```
+
+Recall that besides the problem to prove, a list of proved facts are also given to you as axioms. If they are helpful, integrate them into your proof. You don't need to use all of them, and you don't need to prove them again. If you want to use additional lemmas that are not listed, you should include the lemmas and their proofs in your final proof.
+
+As an example, your final proof should look like this:
+
+```lean4
+import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+lemma xxx := by some proof (if this lemma is not given in list of facts)
+
+lemma xxx := by some proof (if this lemma is not given in list of facts)
+
+...
+
+theorem xxx := by some proof
+```
+
+Note that if the lean header used in the problem statement is different (for example, import more libraries), you should switch to that header. Also, you are not allowed to write any axioms not listed before. Any new things you write should be either a lemma or a theorem with the corresponding proof.
+Before producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.
+The plan should highlight key ideas, intermediate steps or lemmas, and proof structures that will guide the construction of the final formal proof.
+
+Now please start to prove the problem following the above instructions.
+"""
+
+###########################################################
+# Prompt template for revision
+###########################################################
+
+REVISION_NOFACTS_TEMPLATE = "Complete the following Lean 4 code:\n\n```lean4\n{original_question_lean4}```\n\nFollowing is a proof with flaws, and its corresponding compilation error feedback from the compiler. You can refer to it and give your answer. Incorrect proof:\n\n```lean4\n{last_full_proof}\n```\n\nError message: (we use <error></error> to signal the position of the error)\n\"\"\"\n{error_message_for_prev_round}\n\"\"\"\nBefore producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.\nThe plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof."
+
+REVISION_NOAXIOMS_LEMMA_OUTPUT_TEMPLATE = """
+I would like you to help me revise a proof in lean 4. I will first give you the problem, the proof with flaws, and the corresponding error message.
+
+Before giving you the problem statement, I will first give you several proved facts to you, which may help you to prove the problem. The following proved facts are available to you. These facts are labeled by axiom in Lean 4 and you can directly use them in your proof.
+```
+```
+
+The goal is to prove the following problem in lean 4:
+
+```lean4
+{original_question_lean4}
+```
+
+Following is a proof of the previous problem, possibly using the given proved facts.
+
+```lean4
+{last_full_proof}
+```
+
+Now I would like you to give me a detailed walk-through on the revision of the previous Lean 4 proof. I compiled the provided proof using Lean 4 verifier, and I get the following error messages. Error message: (we use <error></error> to signal the position of the error)
+
+\"\"\"
+{error_message_for_prev_round}
+\"\"\"
+
+Now, please help me to revise the Lean 4 code based on the error messages. Before producing the revised Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies. The plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof. Most importantly, because the goal is to revise the Lean 4 code instead of generating a completely new one, the plan should contain a comment block on if the genenral proof strategy is correct (by comparing with the key ideas, intermediate lemmas, etc), and a detailed walk-thorough how to revise the Lean 4 code to fix the error messages. For example, you should explain what's your thought on a specific error, and how to revise the code the fix the error. However, if you feel like the original proof is totally wrong, you can generate a new one.
+
+Note that when generating the revised proof, you are encouraged to use the proved facts (listed as axioms) since they are likely to be related to the problem, and they might give you some thoughts about the proof strategy even if you do not directly use them. Besides, you are also encouraged to follow the previous proof structure, i.e., if there is a lemma in the previous proof with flaw, you are also encouraged to keep that lemma (if that lemma is proved without error message) or just modify the lemma in place (if that lemma is not proved and there are corresponding error messages). Note that when writing the proof, please do not write any new axioms besides the given proved facts. Please put the revised proof in the last ```lean4\n(your revised proof)\n``` block.
+"""
+
+REVISION_AXIOMS_LEMMA_OUTPUT_TEMPLATE = """
+I would like you to help me revise a proof in lean 4. I will first give you the problem, the proof with flaws, and the corresponding error message.
+
+Before giving you the problem statement, I will first give you several proved facts to you, which may help you to prove the problem. The following proved facts are available to you. These facts are labeled by axiom in Lean 4 and you can directly use them in your proof.
+```
+{axioms}
+```
+
+The goal is to prove the following problem in lean 4:
+
+```lean4
+{original_question_lean4}
+```
+
+Following is a proof of the previous problem, possibly using the given proved facts.
+
+```lean4
+{last_full_proof}
+```
+
+Now I would like you to give me a detailed walk-through on the revision of the previous Lean 4 proof. I compiled the provided proof using Lean 4 verifier, and I get the following error messages. Error message: (we use <error></error> to signal the position of the error)
+
+\"\"\"
+{error_message_for_prev_round}
+\"\"\"
+
+Now, please help me to revise the Lean 4 code based on the error messages. Before producing the revised Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies. The plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof. Most importantly, because the goal is to revise the Lean 4 code instead of generating a completely new one, the plan should contain a comment block on if the genenral proof strategy is correct (by comparing with the key ideas, intermediate lemmas, etc), and a detailed walk-thorough how to revise the Lean 4 code to fix the error messages. For example, you should explain what's your thought on a specific error, and how to revise the code the fix the error. However, if you feel like the original proof is totally wrong, you can generate a new one.
+
+Note that when generating the revised proof, you are encouraged to use the proved facts (listed as axioms) since they are likely to be related to the problem, and they might give you some thoughts about the proof strategy even if you do not directly use them. Besides, you are also encouraged to follow the previous proof structure, i.e., if there is a lemma in the previous proof with flaw, you are also encouraged to keep that lemma (if that lemma is proved without error message) or just modify the lemma in place (if that lemma is not proved and there are corresponding error messages). Note that when writing the proof, please do not write any new axioms besides the given proved facts. Please put the revised proof in the last ```lean4\n(your revised proof)\n``` block.
+"""

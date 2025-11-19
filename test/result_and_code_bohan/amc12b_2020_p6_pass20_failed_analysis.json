@@ -1,0 +1,115 @@
+{
+  "is_proof_correct": true,
+  "current_code": "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\nlemma factorial_succ_mul (k : \u2115) : (k + 1)! = (k + 1) * k ! := by\n  rw [Nat.factorial_succ]\n  <;> ring\n  <;> simp [Nat.factorial]\n  <;> ring\n  <;> simp [Nat.factorial]\n  <;> ring\n\nlemma factorial_sub_eq_mul (n : \u2115) :\n    (n + 2)! - (n + 1)! = (n + 1) * (n + 1)! := by\n  \n  have h\u2082 : (n + 2)! = (n + 2) * (n + 1)! := by\n    rw [Nat.factorial_succ]\n    <;> ring_nf\n    <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n    <;> ring_nf\n  \n  have h\u2083 : (n + 1)! = (n + 1) * n ! := by\n    rw [Nat.factorial_succ]\n    <;> ring_nf\n    <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n    <;> ring_nf\n  \n  calc\n    (n + 2)! - (n + 1)! = (n + 2) * (n + 1)! - (n + 1)! := by rw [h\u2082]\n    _ = (n + 2 - 1) * (n + 1)! := by\n      have h\u2084 : (n + 2) * (n + 1)! \u2265 (n + 1)! := by\n        have h\u2085 : (n + 2) \u2265 1 := by omega\n        have h\u2086 : (n + 1)! \u2265 0 := by positivity\n        have h\u2087 : (n + 2) * (n + 1)! \u2265 (n + 1)! := by nlinarith\n        exact h\u2087\n      have h\u2085 : (n + 2) * (n + 1)! - (n + 1)! = (n + 2 - 1) * (n + 1)! := by\n        cases n with\n        | zero => simp [Nat.factorial]\n        | succ n =>\n          simp [Nat.mul_sub_left_distrib, Nat.mul_sub_right_distrib,\n                Nat.add_assoc, Nat.add_mul, Nat.mul_add, Nat.mul_one,\n                Nat.mul_assoc, Nat.mul_comm, Nat.mul_left_comm] at *\n          <;> ring_nf at *\n          <;> omega\n      exact h\u2085\n    _ = (n + 1) * (n + 1)! := by\n      have h\u2084 : (n + 2 - 1) = (n + 1) := by\n        have h\u2085 : n + 2 \u2265 1 := by omega\n        have h\u2086 : n + 2 - 1 = n + 1 := by omega\n        exact h\u2086\n      rw [h\u2084]\n      <;> ring_nf\n      <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n      <;> ring_nf\n\nlemma mul_factorial_eq_pow (n : \u2115) :\n    (n + 1) * (n + 1)! = (n + 1) ^ 2 * n ! := by\n  have h\u2082 : (n + 1)! = (n + 1) * n ! := by\n    rw [Nat.factorial_succ]\n    <;> ring_nf\n    <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n    <;> ring_nf\n  calc\n    (n + 1) * (n + 1)! = (n + 1) * ((n + 1) * n !) := by rw [h\u2082]\n    _ = (n + 1) ^ 2 * n ! := by\n      ring_nf\n      <;> simp [Nat.pow_succ, Nat.mul_assoc]\n      <;> ring_nf\n      <;> nlinarith\n\nlemma diff_factorial_eq (n : \u2115) (h\u2080 : 9 \u2264 n) :\n    (n + 2)! - (n + 1)! = (n + 1) ^ 2 * n ! := by\n  calc\n    (n + 2)! - (n + 1)! = (n + 1) * (n + 1)! := by\n      rw [factorial_sub_eq_mul]\n    _ = (n + 1) ^ 2 * n ! := by\n      rw [mul_factorial_eq_pow]\nlemma factorial_ne_zero (n : \u2115) : (n ! : \u211d) \u2260 0 := by\n  norm_cast\n  apply Nat.factorial_ne_zero\n\nlemma factorial_diff_div_eq_square (n : \u2115) :\n    ((n + 2)! - (n + 1)!) / (n ! : \u211d) = ((n + 1 : \u211d) ^ 2) := by\n  have h\u2081 : ((n + 2)! : \u211d) = ((n + 2 : \u2115) : \u211d) * ((n + 1)! : \u211d) := by\n    norm_cast\n    <;> simp [Nat.factorial_succ, Nat.cast_add, Nat.cast_one, Nat.cast_mul]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  have h\u2082 : ((n + 1)! : \u211d) = ((n + 1 : \u2115) : \u211d) * (n ! : \u211d) := by\n    norm_cast\n    <;> simp [Nat.factorial_succ, Nat.cast_add, Nat.cast_one, Nat.cast_mul]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  have h\u2083 : ((n + 2)! : \u211d) - ((n + 1)! : \u211d) =\n      ((n + 1 : \u2115) : \u211d) * ((n + 1)! : \u211d) := by\n    rw [h\u2081]\n    ring_nf\n    <;> simp [Nat.cast_add, Nat.cast_one, Nat.cast_mul]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  calc\n    ((n + 2)! - (n + 1)!) / (n ! : \u211d)\n        = (((n + 1 : \u2115) : \u211d) * ((n + 1)! : \u211d)) / (n ! : \u211d) := by\n          rw [h\u2083]\n    _ = ((n + 1 : \u2115) : \u211d) * (((n + 1)! : \u211d) / (n ! : \u211d)) := by\n          field_simp [factorial_ne_zero n] <;> ring_nf\n    _ = ((n + 1 : \u2115) : \u211d) * (((n + 1 : \u2115) : \u211d) * (n ! : \u211d) / (n ! : \u211d)) := by\n          rw [h\u2082]\n    _ = ((n + 1 : \u2115) : \u211d) * ((n + 1 : \u2115) : \u211d) := by\n          field_simp [factorial_ne_zero n] <;> ring_nf\n    _ = ((n + 1 : \u211d) ^ 2) := by\n          norm_num [pow_two]\n          <;> ring_nf\n          <;> norm_num\n          <;> linarith\n\nlemma exists_x_of_factorial_diff (n : \u2115) (h\u2080 : 9 \u2264 n) :\n    \u2203 x : \u2115, (x : \u211d) ^ 2 = ((n + 2)! - (n + 1)!) / n ! := by\n  refine \u27e8n + 1, ?_\u27e9\n  have h\u2081 : ((n + 2)! - (n + 1)!) / (n ! : \u211d) = ((n + 1 : \u211d) ^ 2) :=\n    factorial_diff_div_eq_square n\n  have h\u2082 : ((n + 1 : \u2115) : \u211d) ^ 2 = ((n + 1 : \u211d) ^ 2) := by\n    norm_num [pow_two]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  calc\n    ((n + 1 : \u2115) : \u211d) ^ 2 = ((n + 1 : \u211d) ^ 2) := by\n      rw [h\u2082]\n    _ = ((n + 2)! - (n + 1)!) / (n ! : \u211d) := by\n      rw [\u2190 h\u2081]\n    _ = ((n + 2)! - (n + 1)!) / n ! := by\n      norm_num\n\ntheorem amc12b_2020_p6 (n : \u2115) (h\u2080 : 9 \u2264 n) : \u2203 x : \u2115, (x : \u211d) ^ 2 = ((n + 2)! - (n + 1)!) / n ! := by\n  exact exists_x_of_factorial_diff n h\u2080",
+  "declarations": {
+    "factorial_succ_mul": {
+      "name": "factorial_succ_mul",
+      "type": "lemma",
+      "start_line": 8,
+      "end_line": 15,
+      "has_proof": true,
+      "dependencies": [],
+      "is_correct": true,
+      "was_fixed": false
+    },
+    "factorial_sub_eq_mul": {
+      "name": "factorial_sub_eq_mul",
+      "type": "lemma",
+      "start_line": 16,
+      "end_line": 58,
+      "has_proof": true,
+      "dependencies": [],
+      "is_correct": true,
+      "was_fixed": true,
+      "added_for": "diff_factorial_eq"
+    },
+    "mul_factorial_eq_pow": {
+      "name": "mul_factorial_eq_pow",
+      "type": "lemma",
+      "start_line": 59,
+      "end_line": 73,
+      "has_proof": true,
+      "dependencies": [],
+      "is_correct": true,
+      "was_fixed": true,
+      "added_for": "diff_factorial_eq"
+    },
+    "diff_factorial_eq": {
+      "name": "diff_factorial_eq",
+      "type": "lemma",
+      "start_line": 74,
+      "end_line": 80,
+      "has_proof": true,
+      "dependencies": [
+        "mul_factorial_eq_pow",
+        "factorial_sub_eq_mul"
+      ],
+      "is_correct": true,
+      "was_fixed": true,
+      "fix_history": {
+        "original_subproblem": "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\n\n\ntheorem diff_factorial_eq (n : \u2115) (h\u2080 : 9 \u2264 n) :\n    (n + 2)! - (n + 1)! = (n + 1) ^ 2 * n ! := by sorry",
+        "fixed_subproblem": "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\nlemma factorial_sub_eq_mul (n : \u2115) :\n    (n + 2)! - (n + 1)! = (n + 1) * (n + 1)! := by\n  \n  have h\u2082 : (n + 2)! = (n + 2) * (n + 1)! := by\n    rw [Nat.factorial_succ]\n    <;> ring_nf\n    <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n    <;> ring_nf\n  \n  have h\u2083 : (n + 1)! = (n + 1) * n ! := by\n    rw [Nat.factorial_succ]\n    <;> ring_nf\n    <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n    <;> ring_nf\n  \n  calc\n    (n + 2)! - (n + 1)! = (n + 2) * (n + 1)! - (n + 1)! := by rw [h\u2082]\n    _ = (n + 2 - 1) * (n + 1)! := by\n      have h\u2084 : (n + 2) * (n + 1)! \u2265 (n + 1)! := by\n        have h\u2085 : (n + 2) \u2265 1 := by omega\n        have h\u2086 : (n + 1)! \u2265 0 := by positivity\n        have h\u2087 : (n + 2) * (n + 1)! \u2265 (n + 1)! := by nlinarith\n        exact h\u2087\n      have h\u2085 : (n + 2) * (n + 1)! - (n + 1)! = (n + 2 - 1) * (n + 1)! := by\n        cases n with\n        | zero => simp [Nat.factorial]\n        | succ n =>\n          simp [Nat.mul_sub_left_distrib, Nat.mul_sub_right_distrib,\n                Nat.add_assoc, Nat.add_mul, Nat.mul_add, Nat.mul_one,\n                Nat.mul_assoc, Nat.mul_comm, Nat.mul_left_comm] at *\n          <;> ring_nf at *\n          <;> omega\n      exact h\u2085\n    _ = (n + 1) * (n + 1)! := by\n      have h\u2084 : (n + 2 - 1) = (n + 1) := by\n        have h\u2085 : n + 2 \u2265 1 := by omega\n        have h\u2086 : n + 2 - 1 = n + 1 := by omega\n        exact h\u2086\n      rw [h\u2084]\n      <;> ring_nf\n      <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n      <;> ring_nf\n\nlemma mul_factorial_eq_pow (n : \u2115) :\n    (n + 1) * (n + 1)! = (n + 1) ^ 2 * n ! := by\n  have h\u2082 : (n + 1)! = (n + 1) * n ! := by\n    rw [Nat.factorial_succ]\n    <;> ring_nf\n    <;> simp [Nat.factorial_succ, Nat.mul_assoc]\n    <;> ring_nf\n  calc\n    (n + 1) * (n + 1)! = (n + 1) * ((n + 1) * n !) := by rw [h\u2082]\n    _ = (n + 1) ^ 2 * n ! := by\n      ring_nf\n      <;> simp [Nat.pow_succ, Nat.mul_assoc]\n      <;> ring_nf\n      <;> nlinarith\n\ntheorem diff_factorial_eq (n : \u2115) (h\u2080 : 9 \u2264 n) :\n    (n + 2)! - (n + 1)! = (n + 1) ^ 2 * n ! := by\n  calc\n    (n + 2)! - (n + 1)! = (n + 1) * (n + 1)! := by\n      rw [factorial_sub_eq_mul]\n    _ = (n + 1) ^ 2 * n ! := by\n      rw [mul_factorial_eq_pow]"
+      }
+    },
+    "factorial_ne_zero": {
+      "name": "factorial_ne_zero",
+      "type": "lemma",
+      "start_line": 81,
+      "end_line": 84,
+      "has_proof": true,
+      "dependencies": [],
+      "is_correct": true,
+      "was_fixed": false
+    },
+    "factorial_diff_div_eq_square": {
+      "name": "factorial_diff_div_eq_square",
+      "type": "lemma",
+      "start_line": 85,
+      "end_line": 122,
+      "has_proof": true,
+      "dependencies": [
+        "factorial_ne_zero"
+      ],
+      "is_correct": true,
+      "was_fixed": true
+    },
+    "exists_x_of_factorial_diff": {
+      "name": "exists_x_of_factorial_diff",
+      "type": "lemma",
+      "start_line": 123,
+      "end_line": 140,
+      "has_proof": true,
+      "dependencies": [
+        "factorial_diff_div_eq_square"
+      ],
+      "is_correct": true,
+      "was_fixed": true
+    },
+    "amc12b_2020_p6": {
+      "name": "amc12b_2020_p6",
+      "type": "theorem",
+      "start_line": 141,
+      "end_line": 142,
+      "has_proof": true,
+      "dependencies": [
+        "exists_x_of_factorial_diff"
+      ],
+      "is_correct": true,
+      "was_fixed": true,
+      "fix_history": {
+        "original_subproblem": "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\naxiom factorial_ne_zero (n : \u2115) : (n ! : \u211d) \u2260 0\n\ntheorem amc12b_2020_p6 (n : \u2115) (h\u2080 : 9 \u2264 n) : \u2203 x : \u2115, (x : \u211d) ^ 2 = ((n + 2)! - (n + 1)!) / n ! := by sorry",
+        "fixed_subproblem": "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\nlemma factorial_diff_div_eq_square (n : \u2115) :\n    ((n + 2)! - (n + 1)!) / (n ! : \u211d) = ((n + 1 : \u211d) ^ 2) := by\n  have h\u2081 : ((n + 2)! : \u211d) = ((n + 2 : \u2115) : \u211d) * ((n + 1)! : \u211d) := by\n    norm_cast\n    <;> simp [Nat.factorial_succ, Nat.cast_add, Nat.cast_one, Nat.cast_mul]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  have h\u2082 : ((n + 1)! : \u211d) = ((n + 1 : \u2115) : \u211d) * (n ! : \u211d) := by\n    norm_cast\n    <;> simp [Nat.factorial_succ, Nat.cast_add, Nat.cast_one, Nat.cast_mul]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  have h\u2083 : ((n + 2)! : \u211d) - ((n + 1)! : \u211d) =\n      ((n + 1 : \u2115) : \u211d) * ((n + 1)! : \u211d) := by\n    rw [h\u2081]\n    ring_nf\n    <;> simp [Nat.cast_add, Nat.cast_one, Nat.cast_mul]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  calc\n    ((n + 2)! - (n + 1)!) / (n ! : \u211d)\n        = (((n + 1 : \u2115) : \u211d) * ((n + 1)! : \u211d)) / (n ! : \u211d) := by\n          rw [h\u2083]\n    _ = ((n + 1 : \u2115) : \u211d) * (((n + 1)! : \u211d) / (n ! : \u211d)) := by\n          field_simp [factorial_ne_zero n] <;> ring_nf\n    _ = ((n + 1 : \u2115) : \u211d) * (((n + 1 : \u2115) : \u211d) * (n ! : \u211d) / (n ! : \u211d)) := by\n          rw [h\u2082]\n    _ = ((n + 1 : \u2115) : \u211d) * ((n + 1 : \u2115) : \u211d) := by\n          field_simp [factorial_ne_zero n] <;> ring_nf\n    _ = ((n + 1 : \u211d) ^ 2) := by\n          norm_num [pow_two]\n          <;> ring_nf\n          <;> norm_num\n          <;> linarith\n\n\nlemma exists_x_of_factorial_diff (n : \u2115) (h\u2080 : 9 \u2264 n) :\n    \u2203 x : \u2115, (x : \u211d) ^ 2 = ((n + 2)! - (n + 1)!) / n ! := by\n  refine \u27e8n + 1, ?_\u27e9\n  have h\u2081 : ((n + 2)! - (n + 1)!) / (n ! : \u211d) = ((n + 1 : \u211d) ^ 2) :=\n    factorial_diff_div_eq_square n\n  have h\u2082 : ((n + 1 : \u2115) : \u211d) ^ 2 = ((n + 1 : \u211d) ^ 2) := by\n    norm_num [pow_two]\n    <;> ring_nf\n    <;> norm_num\n    <;> linarith\n  calc\n    ((n + 1 : \u2115) : \u211d) ^ 2 = ((n + 1 : \u211d) ^ 2) := by\n      rw [h\u2082]\n    _ = ((n + 2)! - (n + 1)!) / (n ! : \u211d) := by\n      rw [\u2190 h\u2081]\n    _ = ((n + 2)! - (n + 1)!) / n ! := by\n      norm_num\n\ntheorem amc12b_2020_p6 (n : \u2115) (h\u2080 : 9 \u2264 n) : \u2203 x : \u2115, (x : \u211d) ^ 2 = ((n + 2)! - (n + 1)!) / n ! := by\n  exact exists_x_of_factorial_diff n h\u2080"
+      }
+    }
+  },
+  "errors": [],
+  "error_declarations": [],
+  "header": "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat",
+  "fix_summary": {
+    "total_fixes": 2,
+    "fixed_lemmas": [
+      "amc12b_2020_p6",
+      "diff_factorial_eq"
+    ]
+  }
+}

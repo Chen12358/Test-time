@@ -12,6 +12,9 @@
 #SBATCH --mail-user=sc7843@princeton.edu
 #SBATCH --output=slurm_output/%x-%j.out
 
+cd /scratch/gpfs/CHIJ/siji/Test-time
+mkdir -p slurm_output
+
 # --- User Configuration ---
 # IMPORTANT: Set this to the address of your running gateway server.
 export GATEWAY_URL="http://della9.princeton.edu:6666"
@@ -38,7 +41,7 @@ conda activate /scratch/gpfs/st3812/packages/miniconda/envs/oss
 echo "Environment activated."
 
 # --- Launch vLLM Server ---
-echo "Starting vLLM worker for model ${MODEL_NAME} on port ${WORKER_PORT}..."
+echo "Starting vLLM worker for model ${FRIENDLY_MODEL_NAME} on port ${WORKER_PORT}..."
 
 export TIKTOKEN_ENCODINGS_BASE=/scratch/gpfs/yl7690/tiktoken_encodings
 

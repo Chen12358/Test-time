@@ -6,14 +6,14 @@
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:2
 #SBATCH --time=23:59:00
-#SBATCH --partition=pli-c
-#SBATCH --account=pli
+#SBATCH --partition=gpu-ee
+#SBATCH --account=chij
 #SBATCH --mail-type=FAIL
-#SBATCH --mail-user=st3812@princeton.edu
+#SBATCH --mail-user=sc7843@princeton.edu
 #SBATCH --output=slurm_output/%x-%j.out
 
 source /scratch/gpfs/CHIJ/st3812/.bashrc
-cd /scratch/gpfs/CHIJ/st3812/projects/Test-time
+cd /scratch/gpfs/CHIJ/siji/Test-time
 # --- User Configuration ---
 # IMPORTANT: Set this to the address of your running gateway server.
 # export GATEWAY_URL="http://della-gpu.princeton.edu:8888"
@@ -41,7 +41,7 @@ mkdir -p logs
 # source /scratch/gpfs/haoyu/miniconda3/etc/profile.d/conda.sh
 # conda activate goedelsdk
 
-conda activate Deepseek3
+conda activate /scratch/gpfs/CHIJ/st3812/packages/miniconda/envs/Deepseek3
 
 echo "Environment activated."
 

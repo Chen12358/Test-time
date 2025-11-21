@@ -6,14 +6,15 @@
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:2
 #SBATCH --time=23:59:00
-#SBATCH --partition=pli-c
+#SBATCH --partition=gpu-ee
+#SBATCH --account=chij
 #SBATCH --mail-type=FAIL
-#SBATCH --mail-user=haoyu@princeton.edu
+#SBATCH --mail-user=sc7843@princeton.edu
 #SBATCH --output=slurm_output/%x-%j.out
 
 # --- User Configuration ---
 # IMPORTANT: Set this to the address of your running gateway server.
-export GATEWAY_URL="http://della9.princeton.edu:8888"
+export GATEWAY_URL="http://della9.princeton.edu:6666"
 
 # Port for this vLLM worker. Ensure it's unique if running multiple workers on the same node.
 # This command asks the OS for an available port and saves it to the variable.

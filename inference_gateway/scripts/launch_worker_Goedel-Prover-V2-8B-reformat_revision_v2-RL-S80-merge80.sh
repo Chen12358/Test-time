@@ -14,6 +14,8 @@
 
 source /scratch/gpfs/CHIJ/st3812/.bashrc
 cd /scratch/gpfs/CHIJ/siji/Test-time
+mkdir -p slurm_output
+
 # --- User Configuration ---
 # IMPORTANT: Set this to the address of your running gateway server.
 # export GATEWAY_URL="http://della-gpu.princeton.edu:8888"
@@ -46,7 +48,7 @@ conda activate /scratch/gpfs/CHIJ/st3812/packages/miniconda/envs/Deepseek3
 echo "Environment activated."
 
 # --- Launch vLLM Server ---
-echo "Starting vLLM worker for model ${MODEL_NAME} on port ${WORKER_PORT}..."
+echo "Starting vLLM worker for model ${FRIENDLY_MODEL_NAME} on port ${WORKER_PORT}..."
 
 # Start the vLLM OpenAI-compatible API server in the background
 python -m vllm.entrypoints.openai.api_server \
